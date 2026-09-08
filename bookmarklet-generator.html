@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Lanista Klanliga – bokmärkesgenerator</title>
+<style>
+body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;max-width:900px;margin:40px auto;padding:0 20px;color:#171717}
+label{font-weight:700;display:block;margin-top:18px}
+input,textarea{width:100%;box-sizing:border-box;padding:10px;margin-top:6px;border:1px solid #aaa;border-radius:6px;font:inherit}
+textarea{height:180px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+button{margin-top:18px;padding:11px 18px;border:0;border-radius:7px;background:#222;color:white;font-weight:700;cursor:pointer}
+code{background:#eee;padding:2px 5px;border-radius:4px}
+.small{color:#555;font-size:.95rem}
+</style>
+</head>
+<body>
+<h1>Lanista Klanliga – bokmärkesgenerator</h1>
+<p>Skapar ett Edge/Chrome-bokmärke som hittar <strong>endast närmaste framtida Klanligamatch</strong>, hämtar dess laguppställning och skickar den till Discord-boten.</p>
+
+<label for="url">Railway URL</label>
+<input id="url" placeholder="https://din-klanliga-bot.up.railway.app">
+
+<label for="secret">UPDATE_SECRET</label>
+<input id="secret" type="password" placeholder="Samma hemlighet som i Railway">
+
+<label for="mentions">Discord-taggar</label>
+<textarea id="mentions" placeholder="Jool=123456789012345678\nGodlin=234567890123456789\nsmares=345678901234567890"></textarea>
+<p class="small">En rad per spelare: <code>Lanista-namn=Discord användar-ID</code>. Skriv normalt namnet utan suffixet <code>Järnsvuren</code>. Flerordsnamn går också bra.</p>
+
+<button id="make">Skapa bokmärkeskod</button>
+
+<label for="output">Bokmärkets URL</label>
+<textarea id="output" readonly></textarea>
+<p class="small"><strong>Obs:</strong> Bokmärkeskoden innehåller UPDATE_SECRET och Discord-ID:n. Den innehåller inte Lanista-lösenord, cookie eller Discord-token.</p>
+
+<script>
+const normalize = s => String(s || '')
+  .normalize('NFKC')
+  .replace(/\s+Järnsvuren\s*$/iu, '')
+  .trim()
+  .toLocaleLowerCase('sv-SE');
+
+document.getElementById('make').addEventListener('click', () => {
+  const cfg = {
+    url: document.getElementById('url').value.trim().replace(/\/$/, ''),
+    secret: document.getElementById('secret').value.trim(),
+    mentions: {}
+  };
+
+  document.getElementById('mentions').value.split(/\r?\n/).forEach(line => {
+    const i = line.indexOf('=');
+    if (i <= 0) return;
+    const name = normalize(line.slice(0, i));
+    const id = line.slice(i + 1).trim();
+    if (name && /^\d{10,25}$/.test(id)) cfg.mentions[name] = id;
+  });
+
+  if (!cfg.url.startsWith('https://')) return alert('Railway URL måste börja med https://');
+  if (cfg.secret.length < 12) return alert('Använd en längre UPDATE_SECRET, minst 12 tecken.');
+
+  const runner = async c => {
+    try {
+      if (location.hostname !== 'lanista.se' && location.hostname !== 'www.lanista.se') {
+        return alert('Öppna lanista.se och logga in innan du kör bokmärket.');
+      }
+
+      const get = async url => {
+        const r = await fetch(url, { credentials: 'include' });
+        if (!r.ok) throw new Error(`${url}: HTTP ${r.status}`);
+        return r.json();
+      };
+
+      const unwrap = x => Array.isArray(x) ? x : (x?.data || x?.battles || []);
+      const normalizeName = s => String(s || '')
+        .normalize('NFKC')
+        .replace(/\s+Järnsvuren\s*$/iu, '')
+        .trim()
+        .toLocaleLowerCase('sv-SE');
+
+      const rawBattles = await get('/api/clans/5/battles');
+      const now = Date.now();
+      const battles = unwrap(rawBattles)
+        .filter(b => b?.division?.name === 'Klanligan')
+        .filter(b => !b?.is_played && !b?.finished)
+        .filter(b => Date.parse(b?.plays_at) > now)
+        .sort((a, b) => Date.parse(a.plays_at) - Date.parse(b.plays_at));
+
+      const battle = battles[0];
+      if (!battle) return alert('Ingen framtida Klanligamatch hittades.');
+
+      const settingsRaw = await get(`/api/clans/5/battles/${battle.id}/settings`);
+      const settings = Array.isArray(settingsRaw) ? settingsRaw : (settingsRaw?.data || settingsRaw?.settings || []);
+      const count = Number(battle.players_per_team || 0);
+      if (!count) throw new Error('Matchen saknar players_per_team.');
+
+      const selected = [...settings]
+        .filter(x => Number.isFinite(Number(x?.order)))
+        .sort((a, b) => Number(a.order) - Number(b.order))
+        .slice(0, count);
+
+      if (selected.length !== count) {
+        throw new Error(`Förväntade ${count} valda spelare men hittade ${selected.length}.`);
+      }
+
+      const players = selected.map(x => {
+        const fullName = x?.membership?.avatar?.name || 'Okänd';
+        const key = normalizeName(fullName);
+        return {
+          displayName: fullName,
+          name: key,
+          order: Number(x.order),
+          roleType: x?.role_type || 'NONE',
+          discordId: c.mentions[key] || null
+        };
+      });
+
+      const clanId = 5;
+      const isHome = Number(battle?.home_clan?.id) === clanId;
+      const opponent = isHome ? battle?.away_clan?.name : battle?.home_clan?.name;
+
+      const payload = {
+        secret: c.secret,
+        generatedAt: new Date().toISOString(),
+        battle: {
+          id: battle.id,
+          playsAt: battle.plays_at,
+          playersPerTeam: count,
+          opponent: opponent || 'Okänd motståndare',
+          isHome
+        },
+        players
+      };
+
+      const response = await fetch(c.url + '/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+        body: JSON.stringify(payload)
+      });
+      const text = await response.text().catch(() => '');
+      if (!response.ok) throw new Error(`Railway ${response.status}: ${text || 'okänt fel'}`);
+
+      const missing = players.filter(p => !p.discordId).map(p => p.displayName);
+      const info = `${opponent} – ${count} vs ${count}`;
+      alert(`Klanligan skickad till Discord: ${info}` + (missing.length ? `\nSaknar Discord-ID: ${missing.join(', ')}` : ''));
+    } catch (e) {
+      console.error(e);
+      alert('Klanliga-bot fel: ' + e.message);
+    }
+  };
+
+  const code = 'javascript:(' + runner.toString() + ')(' + JSON.stringify(cfg) + ')';
+  document.getElementById('output').value = code;
+  navigator.clipboard?.writeText(code).catch(() => {});
+});
+</script>
+</body>
+</html>

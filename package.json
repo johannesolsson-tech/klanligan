@@ -1,0 +1,17 @@
+{
+  "name": "lanista-klanliga-bot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Discord-bot/bookmarklet för nästa Klanligamatch i Lanista",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "discord.js": "^14.19.3",
+    "express": "^5.1.0"
+  }
+}
