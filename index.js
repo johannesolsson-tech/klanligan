@@ -26,7 +26,10 @@ app.use((req, res, next) => {
 
 const ROLE_NAMES = {
   NONE: 'Ingen roll',
+  SUPPORT: 'Ledare',
+  SECOND_SUPPORT: 'Andreledare',
   TAUNT: 'Provokatör',
+  SECOND_TAUNT: 'Andreprovokatör',
   DPS: 'Skadegörare'
 };
 
